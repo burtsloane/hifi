@@ -209,8 +209,10 @@ void Midi::resetDevices() {
 }
 
 void Midi::USBchanged() {
-    instance->MidiCleanup();
-    instance->MidiSetup();
+    if (instance != NULL) {
+        instance->MidiCleanup();
+        instance->MidiSetup();
+    }
 }
 
 //
