@@ -22,9 +22,6 @@
 class Midi : public QObject, public Dependency {
     Q_OBJECT
     SINGLETON_DEPENDENCY
-    
-public:
-    Midi();
 
 public:
     void noteReceived(int status, int note, int velocity);    // relay a note to Javascript
@@ -66,6 +63,10 @@ Q_INVOKABLE void unblockMidiDevice(QString name, bool output);
 
 /// repeat all incoming notes to all outputs (default disabled)
 Q_INVOKABLE void thruModeEnable(bool enable);
+
+public:
+    Midi();
+	virtual ~Midi();
 };
 
 #endif // hifi_Midi_h

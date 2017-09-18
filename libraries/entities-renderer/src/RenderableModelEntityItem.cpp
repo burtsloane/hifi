@@ -23,6 +23,7 @@
 #include <PerfStat.h>
 #include <render/Scene.h>
 #include <DependencyManager.h>
+#include <shared/QtHelpers.h>
 
 #include "EntityTreeRenderer.h"
 #include "EntitiesRendererLogging.h"
@@ -378,7 +379,7 @@ void RenderableModelEntityItem::render(RenderArgs* args) {
         auto shapeTransform = getTransformToCenter(success);
         if (success) {
             batch.setModelTransform(shapeTransform); // we want to include the scale as well
-            DependencyManager::get<GeometryCache>()->renderWireCubeInstance(batch, greenColor);
+            DependencyManager::get<GeometryCache>()->renderWireCubeInstance(args, batch, greenColor);
         }
         return;
     }
@@ -1281,4 +1282,12 @@ void RenderableModelEntityItem::mapJoints(const QStringList& modelJointNames) {
             _jointMappingURL = _animationProperties.getURL();
         }
     }
+}
+
+bool RenderableModelEntityItem::getMeshes(MeshProxyList& result) {
+    if (!_model || !_model->isLoaded()) {
+        return false;
+    }
+    BLOCKING_INVOKE_METHOD(_model.get(), "getMeshes", Q_RETURN_ARG(MeshProxyList, result));
+    return !result.isEmpty();
 }

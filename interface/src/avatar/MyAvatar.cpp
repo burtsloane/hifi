@@ -21,6 +21,7 @@
 
 #include <QtCore/QTimer>
 
+#include <shared/QtHelpers.h>
 #include <scripting/HMDScriptingInterface.h>
 #include <AccountManager.h>
 #include <AddressManager.h>
@@ -68,8 +69,8 @@ const float MAX_BOOST_SPEED = 0.5f * MAX_WALKING_SPEED; // action motor gets add
 const float MIN_AVATAR_SPEED = 0.05f;
 const float MIN_AVATAR_SPEED_SQUARED = MIN_AVATAR_SPEED * MIN_AVATAR_SPEED; // speed is set to zero below this
 
-const float YAW_SPEED_DEFAULT = 120.0f;   // degrees/sec
-const float PITCH_SPEED_DEFAULT = 90.0f; // degrees/sec
+const float YAW_SPEED_DEFAULT = 100.0f;   // degrees/sec
+const float PITCH_SPEED_DEFAULT = 75.0f; // degrees/sec
 
 // TODO: normalize avatar speed for standard avatar size, then scale all motion logic
 // to properly follow avatar size.
@@ -254,6 +255,12 @@ MyAvatar::~MyAvatar() {
     _lookAtTargetAvatar.reset();
 }
 
+void MyAvatar::setDominantHand(const QString& hand) {
+    if (hand == DOMINANT_LEFT_HAND || hand == DOMINANT_RIGHT_HAND) {
+        _dominantHand = hand;
+    }
+}
+
 void MyAvatar::registerMetaTypes(QScriptEngine* engine) {
     QScriptValue value = engine->newQObject(this, QScriptEngine::QtOwnership, QScriptEngine::ExcludeDeleteLater | QScriptEngine::ExcludeChildObjects);
     engine->globalObject().setProperty("MyAvatar", value);
@@ -294,7 +301,7 @@ void MyAvatar::simulateAttachments(float deltaTime) {
     // don't update attachments here, do it in harvestResultsFromPhysicsSimulation()
 }
 
-QByteArray MyAvatar::toByteArrayStateful(AvatarDataDetail dataDetail) {
+QByteArray MyAvatar::toByteArrayStateful(AvatarDataDetail dataDetail, bool dropFaceTracking) {
     CameraMode mode = qApp->getCamera().getMode();
     _globalPosition = getPosition();
     // This might not be right! Isn't the capsule local offset in avatar space, and don't we need to add the radius to the y as well? -HRS 5/26/17
@@ -897,7 +904,7 @@ void MyAvatar::restoreAnimation() {
 QStringList MyAvatar::getAnimationRoles() {
     if (QThread::currentThread() != thread()) {
         QStringList result;
-        QMetaObject::invokeMethod(this, "getAnimationRoles", Qt::BlockingQueuedConnection, Q_RETURN_ARG(QStringList, result));
+        BLOCKING_INVOKE_METHOD(this, "getAnimationRoles", Q_RETURN_ARG(QStringList, result));
         return result;
     }
     return _skeletonModel->getRig().getAnimationRoles();
@@ -925,6 +932,7 @@ void MyAvatar::saveData() {
     Settings settings;
     settings.beginGroup("Avatar");
 
+    settings.setValue("dominantHand", _dominantHand);
     settings.setValue("headPitch", getHead()->getBasePitch());
 
     settings.setValue("scale", _targetScale);
@@ -1074,9 +1082,6 @@ void MyAvatar::loadData() {
 
     getHead()->setBasePitch(loadSetting(settings, "headPitch", 0.0f));
 
-    _targetScale = loadSetting(settings, "scale", 1.0f);
-    setScale(glm::vec3(_targetScale));
-
     _prefOverrideAnimGraphUrl.set(QUrl(settings.value("animGraphURL", "").toString()));
     _fullAvatarURLFromPreferences = settings.value("fullAvatarURL", AvatarData::defaultFullAvatarModelUrl()).toUrl();
     _fullAvatarModelName = settings.value("fullAvatarModelName", DEFAULT_FULL_AVATAR_MODEL_NAME).toString();
@@ -1124,7 +1129,7 @@ void MyAvatar::loadData() {
     setCollisionSoundURL(settings.value("collisionSoundURL", DEFAULT_AVATAR_COLLISION_SOUND_URL).toString());
     setSnapTurn(settings.value("useSnapTurn", _useSnapTurn).toBool());
     setClearOverlayWhenMoving(settings.value("clearOverlayWhenMoving", _clearOverlayWhenMoving).toBool());
-
+    setDominantHand(settings.value("dominantHand", _dominantHand).toString().toLower());
     settings.endGroup();
 
     setEnableMeshVisible(Menu::getInstance()->isOptionChecked(MenuOption::MeshVisible));
@@ -1355,6 +1360,7 @@ void MyAvatar::setSkeletonModelURL(const QUrl& skeletonModelURL) {
     Avatar::setSkeletonModelURL(skeletonModelURL);
     _skeletonModel->setVisibleInScene(true, qApp->getMain3DScene());
     _headBoneSet.clear();
+    emit skeletonChanged();
 }
 
 
@@ -1368,7 +1374,7 @@ void MyAvatar::resetFullAvatarURL() {
 void MyAvatar::useFullAvatarURL(const QUrl& fullAvatarURL, const QString& modelName) {
 
     if (QThread::currentThread() != thread()) {
-        QMetaObject::invokeMethod(this, "useFullAvatarURL", Qt::BlockingQueuedConnection,
+        BLOCKING_INVOKE_METHOD(this, "useFullAvatarURL",
                                   Q_ARG(const QUrl&, fullAvatarURL),
                                   Q_ARG(const QString&, modelName));
         return;
@@ -1394,7 +1400,7 @@ void MyAvatar::useFullAvatarURL(const QUrl& fullAvatarURL, const QString& modelN
 
 void MyAvatar::setAttachmentData(const QVector<AttachmentData>& attachmentData) {
     if (QThread::currentThread() != thread()) {
-        QMetaObject::invokeMethod(this, "setAttachmentData", Qt::BlockingQueuedConnection,
+        BLOCKING_INVOKE_METHOD(this, "setAttachmentData",
                                   Q_ARG(const QVector<AttachmentData>, attachmentData));
         return;
     }
@@ -1453,6 +1459,19 @@ controller::Pose MyAvatar::getLeftHandControllerPoseInAvatarFrame() const {
 controller::Pose MyAvatar::getRightHandControllerPoseInAvatarFrame() const {
     glm::mat4 invAvatarMatrix = glm::inverse(createMatFromQuatAndPos(getOrientation(), getPosition()));
     return getRightHandControllerPoseInWorldFrame().transform(invAvatarMatrix);
+}
+
+void MyAvatar::setFingerControllerPosesInSensorFrame(const FingerPosesMap& left, const FingerPosesMap& right) {
+    _leftHandFingerPosesInSensorFramceCache.set(left);
+    _rightHandFingerPosesInSensorFramceCache.set(right);
+}
+
+MyAvatar::FingerPosesMap MyAvatar::getLeftHandFingerControllerPosesInSensorFrame() const {
+    return _leftHandFingerPosesInSensorFramceCache.get();
+}
+
+MyAvatar::FingerPosesMap MyAvatar::getRightHandFingerControllerPosesInSensorFrame() const {
+    return _rightHandFingerPosesInSensorFramceCache.get();
 }
 
 void MyAvatar::setFootControllerPosesInSensorFrame(const controller::Pose& left, const controller::Pose& right) {
@@ -1620,7 +1639,8 @@ void MyAvatar::prepareForPhysicsSimulation() {
     _characterController.setParentVelocity(parentVelocity);
 
     _characterController.setPositionAndOrientation(getPosition(), getOrientation());
-    if (qApp->isHMDMode()) {
+    auto headPose = getHeadControllerPoseInAvatarFrame();
+    if (headPose.isValid()) {
         _follow.prePhysicsUpdate(*this, deriveBodyFromHMDSensor(), _bodySensorMatrix, hasDriveInput());
     } else {
         _follow.deactivate();
@@ -2211,6 +2231,14 @@ void MyAvatar::clampScaleChangeToDomainLimits(float desiredScale) {
     qCDebug(interfaceapp, "Changed scale to %f", (double)_targetScale);
 }
 
+float MyAvatar::getDomainMinScale() {
+    return _domainMinimumScale;
+}
+
+float MyAvatar::getDomainMaxScale() {
+    return _domainMaximumScale;
+}
+
 void MyAvatar::increaseSize() {
     // make sure we're starting from an allowable scale
     clampTargetScaleToDomainLimits();
@@ -2258,17 +2286,27 @@ void MyAvatar::restrictScaleFromDomainSettings(const QJsonObject& domainSettings
     if (_domainMinimumScale > _domainMaximumScale) {
         std::swap(_domainMinimumScale, _domainMaximumScale);
     }
+    // Set avatar current scale
+    Settings settings;
+    settings.beginGroup("Avatar");
+    _targetScale = loadSetting(settings, "scale", 1.0f);
 
-    qCDebug(interfaceapp, "This domain requires a minimum avatar scale of %f and a maximum avatar scale of %f",
-            (double)_domainMinimumScale, (double)_domainMaximumScale);
+    qCDebug(interfaceapp) << "This domain requires a minimum avatar scale of " << _domainMinimumScale
+        << " and a maximum avatar scale of " << _domainMaximumScale
+        << ". Current avatar scale is " << _targetScale;
 
     // debug to log if this avatar's scale in this domain will be clamped
-    auto clampedScale = glm::clamp(_targetScale, _domainMinimumScale, _domainMaximumScale);
+    float clampedScale = glm::clamp(_targetScale, _domainMinimumScale, _domainMaximumScale);
 
     if (_targetScale != clampedScale) {
-        qCDebug(interfaceapp, "Avatar scale will be clamped to %f because %f is not allowed by current domain",
-                (double)clampedScale, (double)_targetScale);
+        qCDebug(interfaceapp) << "Current avatar scale is clamped to " << clampedScale
+            << " because " << _targetScale << " is not allowed by current domain";
+        // The current scale of avatar should not be more than domain's max_avatar_scale and not less than domain's min_avatar_scale .
+        _targetScale = clampedScale;
     }
+
+    setScale(glm::vec3(_targetScale));
+    settings.endGroup();
 }
 
 void MyAvatar::clearScaleRestriction() {
@@ -2358,7 +2396,7 @@ bool MyAvatar::safeLanding(const glm::vec3& position) {
 
     if (QThread::currentThread() != thread()) {
         bool result;
-        QMetaObject::invokeMethod(this, "safeLanding", Qt::BlockingQueuedConnection, Q_RETURN_ARG(bool, result), Q_ARG(const glm::vec3&, position));
+        BLOCKING_INVOKE_METHOD(this, "safeLanding", Q_RETURN_ARG(bool, result), Q_ARG(const glm::vec3&, position));
         return result;
     }
     glm::vec3 better;
@@ -2522,6 +2560,21 @@ bool MyAvatar::isInAir() {
 bool MyAvatar::getFlyingEnabled() {
     // May return true even if client is not allowed to fly in the zone.
     return _enableFlying;
+}
+
+// Public interface for targetscale
+float MyAvatar::getAvatarScale() {
+    return getTargetScale();
+}
+
+void MyAvatar::setAvatarScale(float val) {
+
+    if (QThread::currentThread() != thread()) {
+        QMetaObject::invokeMethod(this, "setAvatarScale", Q_ARG(float, val));
+        return;
+    }
+
+    setTargetScale(val);
 }
 
 void MyAvatar::setCollisionsEnabled(bool enabled) {
